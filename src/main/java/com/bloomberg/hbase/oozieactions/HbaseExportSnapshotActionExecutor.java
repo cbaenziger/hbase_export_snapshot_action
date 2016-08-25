@@ -22,6 +22,8 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
 
+import org.apache.hadoop.fs.FSDataOutputStream;
+
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.util.DiskChecker;
 import org.apache.hadoop.conf.Configuration;
@@ -56,6 +58,19 @@ import org.apache.oozie.util.LogUtils;
 import org.jdom.Element;
 import org.jdom.JDOMException;
 import org.jdom.Namespace;
+
+import org.apache.hadoop.yarn.api.ApplicationClientProtocol;
+import org.apache.hadoop.yarn.client.ClientRMProxy;
+import org.apache.hadoop.yarn.api.protocolrecords.GetDelegationTokenRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetDelegationTokenResponse;
+import org.apache.hadoop.yarn.util.Records;
+
+import org.apache.hadoop.mapreduce.security.token.delegation.DelegationTokenIdentifier;
+import org.apache.hadoop.mapred.JobID;
+import org.apache.oozie.WorkflowActionBean;
+import org.apache.hadoop.mapred.RunningJob;
+import org.apache.hadoop.mapred.JobClient;
+
 
 public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
 
@@ -228,7 +243,7 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
 
         return actionConf;
     }
-/*
+
     @Override
     public void start(Context context, WorkflowAction action) throws ActionExecutorException {
         LogUtils.setLogInfo(action);
@@ -267,13 +282,257 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
             throw new ActionExecutorException(ActionExecutorException.ErrorType.FAILED, "JA010",
                     "Proxy user launcher error: " + ex.toString());
         }
-    }*/
+    }
+
+    private boolean needInjectCredentials() {
+        boolean methodExists = true;
+
+        Class klass;
+        try {
+            klass = Class.forName("org.apache.hadoop.mapred.JobConf");
+            klass.getMethod("getCredentials");
+        }
+        catch (ClassNotFoundException ex) {
+            methodExists = false;
+        }
+        catch (NoSuchMethodException ex) {
+            methodExists = false;
+        }
+
+        return methodExists;
+    }
+
+    @Override
+    public void submitLauncher(FileSystem actionFs, Context context, WorkflowAction action) throws ActionExecutorException {
+        JobClient jobClient = null;
+        boolean exception = false;
+        try {
+            Path appPathRoot = new Path(context.getWorkflow().getAppPath());
+
+            // app path could be a file
+            if (actionFs.isFile(appPathRoot)) {
+                appPathRoot = appPathRoot.getParent();
+            }
+
+            Element actionXml = XmlUtils.parseXml(action.getConf());
+
+            // action job configuration
+            Configuration actionConf = loadHadoopDefaultResources(context, actionXml);
+            setupActionConf(actionConf, context, actionXml, appPathRoot);
+            LOG.debug("Setting LibFilesArchives ");
+            setLibFilesArchives(context, actionXml, appPathRoot, actionConf);
+
+            String jobName = actionConf.get(HADOOP_JOB_NAME);
+            if (jobName == null || jobName.isEmpty()) {
+                jobName = XLog.format("oozie:action:T={0}:W={1}:A={2}:ID={3}",
+                        getType(), context.getWorkflow().getAppName(),
+                        action.getName(), context.getWorkflow().getId());
+                actionConf.set(HADOOP_JOB_NAME, jobName);
+            }
+
+            injectActionCallback(context, actionConf);
+
+            if(actionConf.get(ACL_MODIFY_JOB) == null || actionConf.get(ACL_MODIFY_JOB).trim().equals("")) {
+                // ONLY in the case where user has not given the
+                // modify-job ACL specifically
+                if (context.getWorkflow().getAcl() != null) {
+                    // setting the group owning the Oozie job to allow anybody in that
+                    // group to modify the jobs.
+                    actionConf.set(ACL_MODIFY_JOB, context.getWorkflow().getAcl());
+                }
+            }
+
+            // Setting the credential properties in launcher conf
+            JobConf credentialsConf = null;
+            HashMap<String, CredentialsProperties> credentialsProperties = setCredentialPropertyToActionConf(context,
+                    action, actionConf);
+            if (credentialsProperties != null) {
+
+                // Adding if action need to set more credential tokens
+                credentialsConf = new JobConf(false);
+                XConfiguration.copy(actionConf, credentialsConf);
+                setCredentialTokens(credentialsConf, context, action, credentialsProperties);
+
+                // insert conf to action conf from credentialsConf
+                for (Entry<String, String> entry : credentialsConf) {
+                    if (actionConf.get(entry.getKey()) == null) {
+                        actionConf.set(entry.getKey(), entry.getValue());
+                    }
+                }
+            }
+
+            JobConf launcherJobConf = createLauncherConf(actionFs, context, action, actionXml, actionConf);
+
+            launcherJobConf.setUser("hbase");
+            launcherJobConf.setStrings("user.name", "hbase");
+
+            /*
+            Collection<Token<? extends TokenIdentifier>> tokenMap = launcherJobConf.getCredentials().getAllTokens();
+            Credentials newCreds = new Credentials();
+            for (Token t : tokenMap) {
+                if (!t.getKind().toString().contains("RM_DELEGATION_TOKEN")) { // && !t.getKind().toString().equals("HDFS_DELEGATION_TOKEN")) {
+                    newCreds.addToken(t.getService(), t);
+                }
+            }
+            launcherJobConf.setCredentials(newCreds);*/
+
+            LOG.debug("Creating Job Client for action " + action.getId());
+            //jobClient = createJobClient(context, launcherJobConf);
+            jobClient = Services.get().get(HadoopAccessorService.class).createJobClient("hbase", launcherJobConf);
+            String launcherId = LauncherMapperHelper.getRecoveryId(launcherJobConf, context.getActionDir(), context
+                    .getRecoveryId());
+            boolean alreadyRunning = launcherId != null;
+            RunningJob runningJob;
+
+            // if user-retry is on, always submit new launcher
+            boolean isUserRetry = ((WorkflowActionBean)action).isUserRetry();
+
+            if (alreadyRunning && !isUserRetry) {
+                runningJob = jobClient.getJob(JobID.forName(launcherId));
+                if (runningJob == null) {
+                    String jobTracker = launcherJobConf.get(HADOOP_JOB_TRACKER);
+                    throw new ActionExecutorException(ActionExecutorException.ErrorType.ERROR, "JA017",
+                            "unknown job [{0}@{1}], cannot recover", launcherId, jobTracker);
+                }
+            }
+            else {
+                LOG.debug("Submitting the job through Job Client for action " + action.getId());
+
+                // setting up propagation of the delegation token.
+                HadoopAccessorService has = Services.get().get(HadoopAccessorService.class);
+                Token<DelegationTokenIdentifier> mrdt = jobClient.getDelegationToken(has
+                        .getMRDelegationTokenRenewer(launcherJobConf));
+                launcherJobConf.getCredentials().addToken(HadoopAccessorService.MR_TOKEN_ALIAS, mrdt);
+
+                // insert credentials tokens to launcher job conf if needed
+                if (needInjectCredentials() && credentialsConf != null) {
+                    for (Token<? extends TokenIdentifier> tk : credentialsConf.getCredentials().getAllTokens()) {
+                        Text fauxAlias = new Text(tk.getKind() + "_" + tk.getService());
+                        LOG.debug("ADDING TOKEN: " + fauxAlias);
+                        launcherJobConf.getCredentials().addToken(fauxAlias, tk);
+                    }
+                    if (credentialsConf.getCredentials().numberOfSecretKeys() > 0) {
+                        for (Entry<String, CredentialsProperties> entry : credentialsProperties.entrySet()) {
+                            CredentialsProperties credProps = entry.getValue();
+                            if (credProps != null) {
+                                Text credName = new Text(credProps.getName());
+                                byte[] secKey = credentialsConf.getCredentials().getSecretKey(credName);
+                                if (secKey != null) {
+                                    LOG.debug("ADDING CREDENTIAL: " + credProps.getName());
+                                    launcherJobConf.getCredentials().addSecretKey(credName, secKey);
+                                }
+                            }
+                        }
+                    }
+                }
+                else {
+                    LOG.info("No need to inject credentials.");
+                }
+
+/*
+                Collection<Token<? extends TokenIdentifier>> tokenMap = launcherJobConf.getCredentials().getAllTokens();
+                Credentials newCreds = new Credentials();
+                for (Token t : tokenMap) {
+                    if (true || !t.getKind().toString().contains("RM_DELEGATION_TOKEN")) { // && !t.getKind().toString().contains("HDFS_DELEGATION_TOKEN")) {
+                        newCreds.addToken(t.getService(), t);
+                    }
+                }
+                launcherJobConf.setCredentials(newCreds);*/
+
+/*
+                Configuration conf = new Configuration(launcherJobConf);
+                org.apache.hadoop.security.Credentials creds = new Credentials();
+                FileSystem fs = FileSystem.get(conf);
+
+                // Get YARN FS token
+                String tokenRenewer = conf.get(YarnConfiguration.RM_PRINCIPAL);
+                if (tokenRenewer == null || tokenRenewer.length() == 0) {
+                    throw new ActionExecutorException(ActionExecutorException.ErrorType.ERROR, "JA020",
+                            "Can't get master Kerberos principal for YARN token");
+                }/*
+                final Token<?> tokens[] = fs.addDelegationTokens(tokenRenewer, creds);
+                if (tokens != null) {
+                    for (Token<?> token : tokens) {
+                        System.out.println("Token kind: " + token.getKind().toString());
+                        System.out.println("Token type: " + token.getService().toString());
+                        launcherJobConf.getCredentials().addToken(token.getService(), token);
+                    }
+                }
+*//*
+                // Get YARN RM token
+                ApplicationClientProtocol rmClient = ClientRMProxy.createRMProxy(conf, ApplicationClientProtocol.class);
+                GetDelegationTokenRequest rmDTRequest = Records.newRecord(GetDelegationTokenRequest.class);
+                rmDTRequest.setRenewer(tokenRenewer);
+                GetDelegationTokenResponse response = rmClient.getDelegationToken(rmDTRequest);
+                org.apache.hadoop.yarn.api.records.Token yarnToken = response.getRMDelegationToken();
+                yarnToken.setService("192.168.100.12:8032"); // This should not be hard coded, only temporary
+                org.apache.hadoop.security.token.Token token = new Token(yarnToken.getIdentifier().array(),
+                        yarnToken.getPassword().array(), new Text(yarnToken.getKind()), new Text(yarnToken.getService()));
+                launcherJobConf.getCredentials().addToken(token.getService(), token);*/
+
+
+                FileSystem fs = FileSystem.get(launcherJobConf);
+                FSDataOutputStream out = fs.create(new Path("/tmp/" + action.getId()));
+                launcherJobConf.writeXml(out);
+                out.close();
+
+                runningJob = jobClient.submitJob(launcherJobConf);
+                if (runningJob == null) {
+                    throw new ActionExecutorException(ActionExecutorException.ErrorType.ERROR, "JA017",
+                            "Error submitting launcher for action [{0}]", action.getId());
+                }
+                launcherId = runningJob.getID().toString();
+                LOG.debug("After submission get the launcherId " + launcherId);
+            }
+
+            String jobTracker = launcherJobConf.get(HADOOP_JOB_TRACKER);
+            String consoleUrl = runningJob.getTrackingURL();
+            context.setStartData(launcherId, jobTracker, consoleUrl);
+        }
+        catch (Exception ex) {
+            exception = true;
+            throw convertException(ex);
+        }
+        finally {
+            if (jobClient != null) {
+                try {
+                    jobClient.close();
+                }
+                catch (Exception e) {
+                    if (exception) {
+                        LOG.error("JobClient error: ", e);
+                    }
+                    else {
+                        throw convertException(e);
+                    }
+                }
+            }
+        }
+    }
 
     @Override
     protected void setCredentialTokens(JobConf jobConf, Context context, WorkflowAction action,
                                        HashMap<String, CredentialsProperties> credPropertiesMap) throws Exception {
-        //super.setCredentialTokens(jobConf, context, action, credPropertiesMap);
+        Configuration conf = new Configuration(jobConf);
+        org.apache.hadoop.security.Credentials creds = new Credentials();
+        FileSystem fs = FileSystem.get(conf);
 
+        // Get YARN FS token
+        String tokenRenewer = conf.get(YarnConfiguration.RM_PRINCIPAL);
+        if (tokenRenewer == null || tokenRenewer.length() == 0) {
+            throw new ActionExecutorException(ActionExecutorException.ErrorType.ERROR, "JA020",
+                    "Can't get master Kerberos principal for YARN token");
+        }
+        final Token<?> tokens[] = fs.addDelegationTokens(tokenRenewer, creds);
+        if (tokens != null) {
+            for (Token<?> token : tokens) {
+                System.out.println("Token kind: " + token.getKind().toString());
+                System.out.println("Token type: " + token.getService().toString());
+                jobConf.getCredentials().addToken(token.getService(), token);
+            }
+        }
+        //super.setCredentialTokens(jobConf, context, action, credPropertiesMap);
+/*
         if (context != null && action != null && credPropertiesMap != null) {
             // Make sure we're logged into Kerberos; if not, or near expiration, it will relogin
             //CredentialsProvider.ensureKerberosLogin();
@@ -296,26 +555,11 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
             }
         }
 
-        // Create proxy user
-        UserGroupInformation loggedUserUgi;
-        loggedUserUgi = UserGroupInformation.getLoginUser();
-        UserGroupInformation proxyUserUgi =  UserGroupInformation.createProxyUser("hbase", loggedUserUgi);
-        Collection<Token<? extends TokenIdentifier>> tokens = proxyUserUgi.getTokens();
-        for (Token token : tokens) {
-            System.out.println("Hbase token kind: " + token.getKind().toString());
-            System.out.println("Hbase token service: " + token.getService().toString());
-            jobConf.getCredentials().addToken(token.getService(), token);
-        }
-
-
-
-
-        /*
         Configuration conf = new Configuration(jobConf);
         org.apache.hadoop.security.Credentials creds = new Credentials();
         FileSystem fs = FileSystem.get(conf);
 
-        // Get YARN token
+        // Get YARN FS token
         String tokenRenewer = conf.get(YarnConfiguration.RM_PRINCIPAL);
         if (tokenRenewer == null || tokenRenewer.length() == 0) {
             throw new ActionExecutorException(ActionExecutorException.ErrorType.ERROR, "JA020",
@@ -324,11 +568,25 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
         final Token<?> tokens[] = fs.addDelegationTokens(tokenRenewer, creds);
         if (tokens != null) {
             for (Token<?> token : tokens) {
-                LOG.debug("Token kind: " + token.getKind().toString());
-                LOG.debug("Token type: " + token.getService().toString());
+                System.out.println("Token kind: " + token.getKind().toString());
+                System.out.println("Token type: " + token.getService().toString());
                 jobConf.getCredentials().addToken(token.getService(), token);
             }
         }
+
+        // Get YARN RM token
+        ApplicationClientProtocol rmClient = ClientRMProxy.createRMProxy(conf, ApplicationClientProtocol.class);
+        GetDelegationTokenRequest rmDTRequest = Records.newRecord(GetDelegationTokenRequest.class);
+        rmDTRequest.setRenewer(tokenRenewer);
+        GetDelegationTokenResponse response = rmClient.getDelegationToken(rmDTRequest);
+        org.apache.hadoop.yarn.api.records.Token yarnToken = response.getRMDelegationToken();
+        yarnToken.setService("192.168.100.12:8032"); // This should not be hard coded, only temporary
+        org.apache.hadoop.security.token.Token token = new Token(yarnToken.getIdentifier().array(),
+                yarnToken.getPassword().array(), new Text(yarnToken.getKind()), new Text(yarnToken.getService()));
+        jobConf.getCredentials().addToken(token.getService(), token);
+        System.out.println("Token kind: " + token.getKind().toString());
+        System.out.println("Token type: " + token.getService().toString());
+
 
         // Get MR token
         HadoopAccessorService has = Services.get().get(HadoopAccessorService.class);
@@ -339,148 +597,13 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
         }
         final Token<?> mrTokens[] = fs.addDelegationTokens(mrTokenRenewer, creds);
         if (mrTokens != null) {
-            for (Token<?> token : mrTokens) {
-                LOG.debug("Token kind: " + token.getKind().toString());
-                LOG.debug("Token type: " + token.getService().toString());
-                jobConf.getCredentials().addToken(token.getService(), token);
+            for (Token<?> mrToken : mrTokens) {
+                LOG.debug("Token kind: " + mrToken.getKind().toString());
+                LOG.debug("Token type: " + mrToken.getService().toString());
+                jobConf.getCredentials().addToken(mrToken.getService(), mrToken);
             }
         }*/
     }
-
-    /*
-    protected void escalatePrivileges(final Configuration conf) throws Exception {
-        // Create proxy user
-        UserGroupInformation loggedUserUgi = UserGroupInformation.getLoginUser();
-        String loggedUserName = loggedUserUgi.getShortUserName();
-        UserGroupInformation proxyUserUgi =  UserGroupInformation.createProxyUser("hbase", loggedUserUgi);
-
-        proxyUserUgi.doAs(new PrivilegedExceptionAction<Void>() {
-             public Void run() throws Exception {
-                 Credentials creds = new Credentials();
-                 FileSystem fs = FileSystem.get(conf);
-                 String tokenRenewer = conf.get(YarnConfiguration.RM_PRINCIPAL);
-                 if (tokenRenewer == null || tokenRenewer.length() == 0)
-                     throw new IOException("Can't get Master Kerberos principal for the RM to use as renewer");
-                 final Token<?> tokens[] = fs.addDelegationTokens(tokenRenewer, creds);
-
-                 // Add tokens to jobConf via tokens[] or creds.addtoJobConf?
-
-                 return null;
-             }
-         } );
-    }*/
-
-    /*
-    @Override
-    protected void setCredentialTokens(JobConf jobConf, Context context, WorkflowAction action,
-                                       HashMap<String, CredentialsProperties> credPropertiesMap) throws Exception {
-        super.setCredentialTokens(jobConf, context, action, credPropertiesMap);
-        // Create proxy user
-        UserGroupInformation loggedUserUgi = UserGroupInformation.getLoginUser();
-        String loggedUserName = loggedUserUgi.getShortUserName();
-        UserGroupInformation proxyUserUgi =  UserGroupInformation.createProxyUser("hbase", loggedUserUgi);
-
-        final JobConf jobConfFinal = jobConf;
-        final Context contextFinal = context;
-        final WorkflowAction actionFinal = action;
-        final HashMap<String, CredentialsProperties> credPropertiesMapFinal = credPropertiesMap;
-
-        jobConf = proxyUserUgi.doAs(new PrivilegedExceptionAction<JobConf>() {
-            public JobConf run() throws Exception {
-                JobConf jobConfTmp = new JobConf(jobConfFinal);
-                if (contextFinal != null && actionFinal != null && credPropertiesMapFinal != null) {
-                    // Make sure we're logged into Kerberos; if not, or near expiration, it will relogin
-                    //CredentialsProvider.ensureKerberosLogin();
-                    for (Entry<String, CredentialsProperties> entry : credPropertiesMapFinal.entrySet()) {
-                        String credName = entry.getKey();
-                        CredentialsProperties credProps = entry.getValue();
-                        if (credProps != null) {
-                            CredentialsProvider credProvider = new CredentialsProvider(credProps.getType());
-                            org.apache.oozie.action.hadoop.Credentials credentialObject = credProvider.createCredentialObject();
-                            if (credentialObject != null) {
-                                credentialObject.addtoJobConf(jobConfTmp, credProps, contextFinal);
-                                LOG.debug("Retrieved Credential '" + credName + "' for action " + actionFinal.getId());
-                            } else {
-                                LOG.debug("Credentials object is null for name= " + credName + ", type=" + credProps.getType());
-                                throw new ActionExecutorException(ActionExecutorException.ErrorType.ERROR, "JA020",
-                                        "Could not load credentials of type [{0}] with name [{1}]]; perhaps it was not defined"
-                                                + " in oozie-site.xml?", credProps.getType(), credName);
-                            }
-                        }
-                    }
-                }
-                Configuration conf = new Configuration(jobConfTmp);
-                org.apache.hadoop.security.Credentials creds = new Credentials();
-                FileSystem fs = FileSystem.get(conf);
-                String tokenRenewer = conf.get(YarnConfiguration.RM_PRINCIPAL);
-                if (tokenRenewer == null || tokenRenewer.length() == 0) {
-                    throw new ActionExecutorException(ActionExecutorException.ErrorType.ERROR, "JA020",
-                            "Can't get master Kerberos principal");
-                }
-                final Token<?> tokens[] = fs.addDelegationTokens(tokenRenewer, creds);
-                if (tokens != null) {
-                    for (Token<?> token : tokens) {
-                        LOG.debug("Token kind: " + token.getKind().toString());
-                        LOG.debug("Token type: " + token.getService().toString());
-                        jobConfTmp.getCredentials().addToken(token.getService(), token);
-                    }
-                }
-                return jobConfTmp;
-            }
-        } );
-    }*/
-
-    /*
-    @Override
-    protected void setCredentialTokens(JobConf jobConf, Context context, WorkflowAction action,
-                                       HashMap<String, CredentialsProperties> credPropertiesMap) throws Exception {
-        if (context != null && action != null && credPropertiesMap != null) {
-            // Make sure we're logged into Kerberos; if not, or near expiration, it will relogin
-            //CredentialsProvider.ensureKerberosLogin();
-            escalatePrivileges(jobConf);
-            for (Entry<String, CredentialsProperties> entry : credPropertiesMap.entrySet()) {
-                String credName = entry.getKey();
-                CredentialsProperties credProps = entry.getValue();
-                if (credProps != null) {
-                    CredentialsProvider credProvider = new CredentialsProvider(credProps.getType());
-                    Credentials credentialObject = credProvider.createCredentialObject();
-                    if (credentialObject != null) {
-                        credentialObject.addtoJobConf(jobConf, credProps, context);
-                        LOG.debug("Retrieved Credential '" + credName + "' for action " + action.getId());
-                    }
-                    else {
-                        LOG.debug("Credentials object is null for name= " + credName + ", type=" + credProps.getType());
-                        throw new ActionExecutorException(ActionExecutorException.ErrorType.ERROR, "JA020",
-                                "Could not load credentials of type [{0}] with name [{1}]]; perhaps it was not defined"
-                                        + " in oozie-site.xml?", credProps.getType(), credName);
-                    }
-                }
-            }
-        }
-    }
-
-    protected void escalatePrivileges(final JobConf jobConf) throws Exception {
-        // Create proxy user
-        UserGroupInformation loggedUserUgi = UserGroupInformation.getLoginUser();
-        String loggedUserName = loggedUserUgi.getShortUserName();
-        UserGroupInformation proxyUserUgi =  UserGroupInformation.createProxyUser("hbase", loggedUserUgi);
-
-        // Get token
-        Token<AuthenticationTokenIdentifier> token = proxyUserUgi.doAs(
-                new PrivilegedExceptionAction<Token<AuthenticationTokenIdentifier>>() {
-                    public Token<AuthenticationTokenIdentifier> run() throws Exception {
-                        return TokenUtil.obtainToken(jobConf);
-                    }
-                }
-        );
-
-        // Print token info for debugging
-        System.out.println(token.getKind().toString());
-        System.out.println(token.getService().toString());
-
-        // Add token to jobConf
-        jobConf.getCredentials().addToken(token.getService(), token);
-    }*/
 
     @Override
     protected String getDefaultShareLibName(Element actionXml) {
