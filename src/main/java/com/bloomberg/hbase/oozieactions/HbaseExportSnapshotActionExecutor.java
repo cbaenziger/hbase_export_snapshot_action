@@ -378,7 +378,7 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
 
             LOG.debug("Creating Job Client for action " + action.getId());
             //jobClient = createJobClient(context, launcherJobConf);
-            jobClient = Services.get().get(HadoopAccessorService.class).createJobClient("hbase", launcherJobConf);
+            jobClient = Services.get().get(HadoopAccessorService.class).createJobClient(context.getWorkflow().getUser(), launcherJobConf);
             String launcherId = LauncherMapperHelper.getRecoveryId(launcherJobConf, context.getActionDir(), context
                     .getRecoveryId());
             boolean alreadyRunning = launcherId != null;
@@ -439,7 +439,6 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
                 }
                 launcherJobConf.setCredentials(newCreds);*/
 
-/*
                 Configuration conf = new Configuration(launcherJobConf);
                 org.apache.hadoop.security.Credentials creds = new Credentials();
                 FileSystem fs = FileSystem.get(conf);
@@ -449,16 +448,8 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
                 if (tokenRenewer == null || tokenRenewer.length() == 0) {
                     throw new ActionExecutorException(ActionExecutorException.ErrorType.ERROR, "JA020",
                             "Can't get master Kerberos principal for YARN token");
-                }/*
-                final Token<?> tokens[] = fs.addDelegationTokens(tokenRenewer, creds);
-                if (tokens != null) {
-                    for (Token<?> token : tokens) {
-                        System.out.println("Token kind: " + token.getKind().toString());
-                        System.out.println("Token type: " + token.getService().toString());
-                        launcherJobConf.getCredentials().addToken(token.getService(), token);
-                    }
                 }
-*//*
+
                 // Get YARN RM token
                 ApplicationClientProtocol rmClient = ClientRMProxy.createRMProxy(conf, ApplicationClientProtocol.class);
                 GetDelegationTokenRequest rmDTRequest = Records.newRecord(GetDelegationTokenRequest.class);
@@ -468,11 +459,11 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
                 yarnToken.setService("192.168.100.12:8032"); // This should not be hard coded, only temporary
                 org.apache.hadoop.security.token.Token token = new Token(yarnToken.getIdentifier().array(),
                         yarnToken.getPassword().array(), new Text(yarnToken.getKind()), new Text(yarnToken.getService()));
-                launcherJobConf.getCredentials().addToken(token.getService(), token);*/
+                launcherJobConf.getCredentials().addToken(token.getService(), token);
 
 
-                FileSystem fs = FileSystem.get(launcherJobConf);
-                FSDataOutputStream out = fs.create(new Path("/tmp/" + action.getId()));
+                FileSystem fsys = FileSystem.get(launcherJobConf);
+                FSDataOutputStream out = fsys.create(new Path("/tmp/" + action.getId()));
                 launcherJobConf.writeXml(out);
                 out.close();
 
