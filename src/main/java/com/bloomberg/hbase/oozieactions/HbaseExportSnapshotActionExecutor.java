@@ -193,6 +193,7 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
         actionConf.set(HADOOP_YARN_RM, jobTracker);
         actionConf.set(HADOOP_NAME_NODE, nameNode);
         actionConf.set(HBASE_DIR, "/hbase");
+        actionConf.set("mapreduce.fileoutputcommitter.marksuccessfuljobs", "true");
 
         // Set job name
         String jobName = actionConf.get(HADOOP_JOB_NAME);
@@ -317,7 +318,7 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
             Element actionXml = XmlUtils.parseXml(action.getConf());
 
             // action job configuration
-            Configuration actionConf = loadHadoopDefaultResources(context, actionXml);
+            Configuration actionConf = action.getConf();
             setupActionConf(actionConf, context, actionXml, appPathRoot);
             LOG.debug("Setting LibFilesArchives ");
             setLibFilesArchives(context, actionXml, appPathRoot, actionConf);
