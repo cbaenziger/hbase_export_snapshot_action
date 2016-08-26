@@ -35,10 +35,9 @@ log4j.logger.com.bloomberg.hbase.oozieactions=ALL, oozie
          org.apache.oozie.action.hadoop.HiveActionExecutor,
          org.apache.oozie.action.hadoop.ShellActionExecutor,
          org.apache.oozie.action.hadoop.SqoopActionExecutor,
--        org.apache.oozie.action.hadoop.DistcpActionExecutor
-+        org.apache.oozie.action.hadoop.DistcpActionExecutor,
-+        com.bloomberg.hbase.oozieactions.HbaseExportSnapshotActionExecutor,
-+        com.bloomberg.hbase.oozieactions.HbaseImportSnapshotActionExecutor
+         org.apache.oozie.action.hadoop.DistcpActionExecutor
+         org.apache.oozie.action.hadoop.DistcpActionExecutor,
++        org.apache.oozie.action.hadoop.HbaseExportSnapshotActionExecutor
        </value>
      </property>
 
@@ -57,10 +56,9 @@ log4j.logger.com.bloomberg.hbase.oozieactions=ALL, oozie
          sqoop-action-0.3.xsd,
          ssh-action-0.1.xsd,
          ssh-action-0.2.xsd,
--        distcp-action-0.1.xsd
-+        distcp-action-0.1.xsd,
-+        hbase-export-snapshot-action-0.1.xsd,
-+        hbase-import-snapshot-action-0.1.xsd
+         distcp-action-0.1.xsd
+         distcp-action-0.1.xsd,
++        hbase-export-snapshot-action-0.1.xsd
        </value>
      </property>
 ```
