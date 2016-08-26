@@ -4,18 +4,6 @@ A custom asynchronous oozie action to export Hbase snapshots.
 ## Install
 In order to manually install this custom action on a
 [BACH](https://github.com/bloomberg/chef-bach) cluster:
-
-Install maven 3.3 or higher
-```
-wget http://mirrors.sonic.net/apache/maven/maven-3/3.3.3/binaries/apache-maven-3.3.3-bin.tar.gz
-tar -zxf apache-maven-3.3.3-bin.tar.gz
-sudo cp -R apache-maven-3.3.3 /usr/local
-sudo ln -s /usr/local/apache-maven-3.3.3/bin/mvn /usr/bin/mvn
-mvn -version
-```
-
-
-Building the code:
 - Install maven 3.3 or higher
 - Build the project into a jar:
 ```
@@ -74,6 +62,7 @@ $ /usr/hdp/current/oozie-server/bin/oozie-setup.sh prepare-war
 $ sudo service oozie restart
 ```
 
+## Run
 On the the host where you are running the job from:
 - Define the oozie URL (e.g. `export OOZIE_URL="http://f-bcpc-vm2.bcpc.example.com:11000/oozie"`)
 - Create the action root directory where the workflow belongs. Put the class jar, dependencies jar and hbase jars in the /lib directory next to the workflow
