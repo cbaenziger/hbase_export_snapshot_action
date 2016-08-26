@@ -1,5 +1,5 @@
-# Hbase Oozie Custom Actions
-This repository contains custom oozie actions to simplify hbase workflows
+# Hbase Export Snapshot
+A custom asynchronous oozie action to export Hbase snapshots.
 
 ## Install
 In order to manually install this custom action on a
@@ -19,7 +19,6 @@ Build the project into a jar:
 ```
 $ mvn package
 ```
-
 Copy the file in `target/hbaseoozie-1.0-SNAPSHOT.jar` to
 `/usr/hdp/current/oozie-server/libext/hbaseoozie-1.0-SNAPSHOT.jar` on the node
 where the oozie server is installed.
