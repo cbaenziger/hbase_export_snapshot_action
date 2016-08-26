@@ -72,5 +72,5 @@ $ sudo service oozie restart
 On the the host where you are running the job from:
 - Define the oozie URL (e.g. `export OOZIE_URL="http://f-bcpc-vm2.bcpc.example.com:11000/oozie"`)
 - Create the action root directory where the workflow belongs. Put the class jar, dependencies jar and hbase jars in the `/lib` directory next to the workflow (alternatively, you can utilize the [oozie shared library](http://blog.cloudera.com/blog/2014/05/how-to-use-the-sharelib-in-apache-oozie-cdh-5/)): 
-- Create the workflow.xml and put it in the action root next to the `/lib` directory
+- Put the workflow.xml in the action root next to the `/lib` directory
 - Put the action root directory with the workflow and `/lib` directory on HDFS (this may require creating /user/ubuntu directory and chown to ubuntu)
