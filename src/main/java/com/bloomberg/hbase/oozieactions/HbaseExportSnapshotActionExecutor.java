@@ -21,6 +21,7 @@ import java.io.DataInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
+import java.net.URI;
 
 import org.apache.hadoop.fs.FSDataOutputStream;
 
@@ -156,11 +157,15 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
     @SuppressWarnings("unchecked")
     Configuration setupActionConf(Configuration actionConf, Context context,
                                   Element actionXml, Path appPath) throws ActionExecutorException {
+        Namespace ns = actionXml.getNamespace();
+        String jobTracker = actionXml.getChild("job-tracker", ns).getTextTrim();
+        String nameNode = actionXml.getChild("name-node", ns).getTextTrim();
+
+        //actionConf = Services.get().get(HadoopAccessorService.class).createJobConf(jobTracker);
+
         super.setupActionConf(actionConf, context, actionXml, appPath);
 
         LOG.debug("Setting up action conf");
-
-        Namespace ns = actionXml.getNamespace();
 
         String strConf = null;
         Element e = actionXml.getChild("configuration", ns);
@@ -184,8 +189,7 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
         XConfiguration.copy(inlineConf, actionConf);
 
 
-        String jobTracker = actionXml.getChild("job-tracker", ns).getTextTrim();
-        String nameNode = actionXml.getChild("name-node", ns).getTextTrim();
+
 
         actionConf.set(HADOOP_USER, HBASE_USER);
         actionConf.set(HADOOP_JOB_TRACKER, jobTracker);
@@ -194,6 +198,7 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
         actionConf.set(HADOOP_NAME_NODE, nameNode);
         actionConf.set(HBASE_DIR, "/hbase");
         actionConf.set("mapreduce.fileoutputcommitter.marksuccessfuljobs", "true");
+        actionConf.set("oozie.action.dir.path", "hdfs://f-bcpc-vm1.bcpc.example.com:8020/tmp/hbase-export-snapshot");
 
         // Set job name
         String jobName = actionConf.get(HADOOP_JOB_NAME);
@@ -264,24 +269,27 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
         final Context contextFinal = context;
         final WorkflowAction  actionFinal = action;
 
+        //proxyUserUgi.doAs(new PrivilegedExceptionAction<Void>() {
+        //   public Void run() throws Exception {
+        //       return null;
+        //    }
+        //} );
+
         try {
-            proxyUserUgi.doAs(new PrivilegedExceptionAction<Void>() {
-                public Void run() throws Exception {
-                    LOG.debug("Starting action " + actionFinal.getId() + " getting Action File System");
-                    FileSystem actionFs = contextFinal.getAppFileSystem();
-                    LOG.debug("Preparing action Dir through copying " + contextFinal.getActionDir());
-                    prepareActionDir(actionFs, contextFinal);
-                    LOG.debug("Action Dir is ready. Submitting the action ");
-                    submitLauncher(actionFs, contextFinal, actionFinal);
-                    LOG.debug("Action submit completed. Performing check ");
-                    check(contextFinal, actionFinal);
-                    LOG.debug("Action check is done after submission");
-                    return null;
-                }
-            } );
+            //LOG.debug("Starting action " + actionFinal.getId() + " getting Action File System");
+            //FileSystem actionFs = contextFinal.getAppFileSystem();
+            //LOG.debug("Preparing action Dir through copying " + contextFinal.getActionDir());
+            //prepareActionDir(actionFs, contextFinal);
+
+
+            LOG.debug("Action Dir is ready. Submitting the action ");
+            submitLauncher(null, contextFinal, actionFinal);
+
+            LOG.debug("Action submit completed. Performing check ");
+            check(contextFinal, actionFinal);
+
         } catch (Exception ex) {
-            throw new ActionExecutorException(ActionExecutorException.ErrorType.FAILED, "JA010",
-                    "Proxy user launcher error: " + ex.toString());
+            throw convertException(ex);
         }
     }
 
@@ -310,18 +318,14 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
         try {
             Path appPathRoot = new Path(context.getWorkflow().getAppPath());
 
-            // app path could be a file
-            if (actionFs.isFile(appPathRoot)) {
-                appPathRoot = appPathRoot.getParent();
-            }
-
             Element actionXml = XmlUtils.parseXml(action.getConf());
 
-            // action job configuration
-            Configuration actionConf = action.getConf();
+            HadoopAccessorService has = Services.get().get(HadoopAccessorService.class);
+
+            //JobConf actionConf = new JobConf();
+            Configuration actionConf = loadHadoopDefaultResources(context, actionXml);
+
             setupActionConf(actionConf, context, actionXml, appPathRoot);
-            LOG.debug("Setting LibFilesArchives ");
-            setLibFilesArchives(context, actionXml, appPathRoot, actionConf);
 
             String jobName = actionConf.get(HADOOP_JOB_NAME);
             if (jobName == null || jobName.isEmpty()) {
@@ -330,6 +334,18 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
                         action.getName(), context.getWorkflow().getId());
                 actionConf.set(HADOOP_JOB_NAME, jobName);
             }
+
+            actionConf.setBoolean("oozie.HadoopAccessorService.created", true);
+            URI uri = context.getAppFileSystem().getUri();
+            actionFs = has.createFileSystem("hbase", uri, actionConf);
+
+            // app path could be a file
+            if (actionFs.isFile(appPathRoot)) {
+                appPathRoot = appPathRoot.getParent();
+            }
+
+            LOG.debug("Setting LibFilesArchives ");
+            setLibFilesArchives(context, actionXml, appPathRoot, actionConf);
 
             injectActionCallback(context, actionConf);
 
@@ -365,7 +381,7 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
             JobConf launcherJobConf = createLauncherConf(actionFs, context, action, actionXml, actionConf);
 
             launcherJobConf.setUser("hbase");
-            launcherJobConf.setStrings("user.name", "hbase");
+            //launcherJobConf.setStrings("user.name", "hbase");
 
             /*
             Collection<Token<? extends TokenIdentifier>> tokenMap = launcherJobConf.getCredentials().getAllTokens();
@@ -379,7 +395,7 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
 
             LOG.debug("Creating Job Client for action " + action.getId());
             //jobClient = createJobClient(context, launcherJobConf);
-            jobClient = Services.get().get(HadoopAccessorService.class).createJobClient(context.getWorkflow().getUser(), launcherJobConf);
+            jobClient = Services.get().get(HadoopAccessorService.class).createJobClient("hbase", launcherJobConf);
             String launcherId = LauncherMapperHelper.getRecoveryId(launcherJobConf, context.getActionDir(), context
                     .getRecoveryId());
             boolean alreadyRunning = launcherId != null;
@@ -400,7 +416,7 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
                 LOG.debug("Submitting the job through Job Client for action " + action.getId());
 
                 // setting up propagation of the delegation token.
-                HadoopAccessorService has = Services.get().get(HadoopAccessorService.class);
+                has = Services.get().get(HadoopAccessorService.class);
                 Token<DelegationTokenIdentifier> mrdt = jobClient.getDelegationToken(has
                         .getMRDelegationTokenRenewer(launcherJobConf));
                 launcherJobConf.getCredentials().addToken(HadoopAccessorService.MR_TOKEN_ALIAS, mrdt);
@@ -439,7 +455,7 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
                     }
                 }
                 launcherJobConf.setCredentials(newCreds);*/
-
+/*
                 Configuration conf = new Configuration(launcherJobConf);
                 org.apache.hadoop.security.Credentials creds = new Credentials();
                 FileSystem fs = FileSystem.get(conf);
@@ -461,6 +477,13 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
                 org.apache.hadoop.security.token.Token token = new Token(yarnToken.getIdentifier().array(),
                         yarnToken.getPassword().array(), new Text(yarnToken.getKind()), new Text(yarnToken.getService()));
                 launcherJobConf.getCredentials().addToken(token.getService(), token);
+*/
+
+                launcherJobConf.setStrings("oozie.action.dir.path", "/tmp");
+                launcherJobConf.setStrings("mapreduce.output.fileoutputformat.outputdir",
+                        "hdfs://f-bcpc-vm1.bcpc.example.com:8020/tmp/hbase-export-snapshot/output");
+                launcherJobConf.setStrings("mapred.output.dir",
+                        "hdfs://f-bcpc-vm1.bcpc.example.com:8020/tmp/hbase-export-snapshot/output");
 
 
                 FileSystem fsys = FileSystem.get(launcherJobConf);
@@ -505,6 +528,7 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
     @Override
     protected void setCredentialTokens(JobConf jobConf, Context context, WorkflowAction action,
                                        HashMap<String, CredentialsProperties> credPropertiesMap) throws Exception {
+        /*
         Configuration conf = new Configuration(jobConf);
         org.apache.hadoop.security.Credentials creds = new Credentials();
         FileSystem fs = FileSystem.get(conf);

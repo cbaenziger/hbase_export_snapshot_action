@@ -45,7 +45,6 @@ import org.apache.oozie.util.XLog;
 import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.security.token.Token;
-import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.conf.Configuration;
 import java.util.Collection;
 import java.io.IOException;
