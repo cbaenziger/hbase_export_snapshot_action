@@ -11,9 +11,17 @@ $ mvn package
 ```
 - This will create a jar containing the class binaries. Un-comment the "maven-shade-plugin" portion of the pom.xml file to create an uber-jar containing all of the necessary dependencies.
 
-On the node where the oozie server is installed:
-- Copy the class jar from `target/hbaseoozie-1.0-SNAPSHOT.jar` to /usr/hdp/current/oozie-server/libext/ 
-- Copy the hbase jars to /usr/hdp/current/oozie-server/libext/
+On the host where the oozie server is installed:
+- Copy the class jar from `target/hbaseoozie-1.0-SNAPSHOT.jar` to `/usr/hdp/current/oozie-server/libext/`
+- Copy the hbase jars to `/usr/hdp/current/oozie-server/libext/`
+* hbase-hadoop2-compat-1.1.2.2.3.4.0-3485.jar
+* htrace-core-3.1.0-incubating.jar
+* hbase-client-1.1.2.2.3.4.0-3485.jar
+* hbase-common-1.1.2.2.3.4.0-3485.jar
+* hbase-protocol-1.1.2.2.3.4.0-3485.jar
+* hbase-server-1.1.2.2.3.4.0-3485.jar
+* netty-3.2.4.Final.jar
+* netty-all-4.0.23.Final.jar
 - If you care about logging, you should add the following line to the end of `/etc/oozie/conf/oozie-log4j.properties`:
 ```
 log4j.logger.com.bloomberg.hbase.oozieactions=ALL, oozie
@@ -65,6 +73,6 @@ $ sudo service oozie restart
 ## Run
 On the the host where you are running the job from:
 - Define the oozie URL (e.g. `export OOZIE_URL="http://f-bcpc-vm2.bcpc.example.com:11000/oozie"`)
-- Create the action root directory where the workflow belongs. Put the class jar, dependencies jar and hbase jars in the /lib directory next to the workflow
-- Create the workflow.xml and put it in the action root next to the /lib directory
-- Put the action root directory with the workflow and /lib directory on HDFS (this may require creating /user/ubuntu directory and chown to ubuntu)
+- Create the action root directory where the workflow belongs. Put the class jar, dependencies jar and hbase jars in the `/lib` directory next to the workflow (alternatively, you can utilize the [oozie shared library](http://blog.cloudera.com/blog/2014/05/how-to-use-the-sharelib-in-apache-oozie-cdh-5/)): 
+- Create the workflow.xml and put it in the action root next to the `/lib` directory
+- Put the action root directory with the workflow and `/lib` directory on HDFS (this may require creating /user/ubuntu directory and chown to ubuntu)
