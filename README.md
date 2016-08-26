@@ -14,14 +14,14 @@ $ mvn package
 On the host where the oozie server is installed:
 - Copy the class jar from `target/hbaseoozie-1.0-SNAPSHOT.jar` to `/usr/hdp/current/oozie-server/libext/`
 - Copy the hbase jars to `/usr/hdp/current/oozie-server/libext/`
-* hbase-hadoop2-compat-1.1.2.2.3.4.0-3485.jar
-* htrace-core-3.1.0-incubating.jar
-* hbase-client-1.1.2.2.3.4.0-3485.jar
-* hbase-common-1.1.2.2.3.4.0-3485.jar
-* hbase-protocol-1.1.2.2.3.4.0-3485.jar
-* hbase-server-1.1.2.2.3.4.0-3485.jar
-* netty-3.2.4.Final.jar
-* netty-all-4.0.23.Final.jar
+..* `hbase-hadoop2-compat-1.1.2.2.3.4.0-3485.jar`
+..* `htrace-core-3.1.0-incubating.jar`
+..* `hbase-client-1.1.2.2.3.4.0-3485.jar`
+..* `hbase-common-1.1.2.2.3.4.0-3485.jar`
+..* `hbase-protocol-1.1.2.2.3.4.0-3485.jar`
+..* `hbase-server-1.1.2.2.3.4.0-3485.jar`
+..* `netty-3.2.4.Final.jar`
+..* `netty-all-4.0.23.Final.jar`
 - If you care about logging, you should add the following line to the end of `/etc/oozie/conf/oozie-log4j.properties`:
 ```
 log4j.logger.com.bloomberg.hbase.oozieactions=ALL, oozie
