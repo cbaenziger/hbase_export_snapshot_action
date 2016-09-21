@@ -22,6 +22,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
 import java.net.URI;
+import java.io.StringWriter;
 
 import org.apache.hadoop.fs.FSDataOutputStream;
 
@@ -49,6 +50,8 @@ import org.apache.oozie.action.hadoop.LauncherMain;
 import org.apache.oozie.action.hadoop.LauncherMapper;
 import org.apache.oozie.action.hadoop.MapReduceMain;
 import org.apache.oozie.action.ActionExecutor;
+import org.apache.oozie.action.ActionExecutor.Context;
+import org.apache.oozie.command.wf.ActionXCommand.ActionExecutorContext;
 import org.apache.oozie.action.ActionExecutorException.ErrorType;
 import org.apache.oozie.action.ActionExecutorException;
 import org.apache.oozie.client.WorkflowAction;
@@ -69,9 +72,11 @@ import org.apache.hadoop.yarn.util.Records;
 import org.apache.hadoop.mapreduce.security.token.delegation.DelegationTokenIdentifier;
 import org.apache.hadoop.mapred.JobID;
 import org.apache.oozie.WorkflowActionBean;
+import org.apache.oozie.WorkflowJobBean;
 import org.apache.hadoop.mapred.RunningJob;
 import org.apache.hadoop.mapred.JobClient;
 
+import org.apache.hadoop.fs.FSDataOutputStream;
 
 public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
 
@@ -239,17 +244,44 @@ public class HbaseExportSnapshotActionExecutor extends JavaActionExecutor {
         String loggedUserName = loggedUserUgi.getShortUserName();
         UserGroupInformation proxyUserUgi =  UserGroupInformation.createProxyUser("hbase", loggedUserUgi);
 
+        // this overrides where getActionDir will write the action.xml file to
+        WorkflowJobBean wfJob = (WorkflowJobBean) context.getWorkflow();
+        wfJob.setUser("hbase");
 
-        final Context contextFinal = context;
-        final WorkflowAction  actionFinal = action;
+        Context contextHBase = new ActionExecutorContext(((WorkflowJobBean) wfJob), ((WorkflowActionBean) action), context.isRetry(), ((ActionExecutorContext) context).isUserRetry());
+//        final WorkflowAction  actionFinal = action;
 
         try {
+//            LOG.debug("Action Dir is ready. Submitting the action ");
+//            submitLauncher(null, contextFinal, actionFinal);
+//
+//            LOG.debug("Action submit completed. Performing check ");
+//            check(contextFinal, actionFinal);
+            LOG.debug("Starting action " + action.getId() + " getting Action File System");
+            URI uri = contextHBase.getAppFileSystem().getUri();
+            HadoopAccessorService has = Services.get().get(HadoopAccessorService.class);
+            Configuration fsConf = has.createJobConf(uri.getAuthority());
+            FileSystem actionFs = has.createFileSystem("hbase", uri, fsConf);
+
+            // Write configuration to string
+            StringWriter confWriter = new StringWriter();
+            fsConf.writeXml(confWriter);
+            confWriter.flush();
+            LOG.debug("XXX Configuration " + confWriter.toString());
+
+            //FileSystem actionFs = context.getAppFileSystem();
+            LOG.debug("Preparing action Dir through copying " + context.getActionDir());
+            FSDataOutputStream testFile = actionFs.create(new Path(new URI("hdfs://Test-Laptop/tmp/foo")), true);
+            String myStr = new String("Foobar");
+            testFile.write(myStr.getBytes()); 
+            testFile.close();
+
+            prepareActionDir(actionFs, contextHBase);
             LOG.debug("Action Dir is ready. Submitting the action ");
-            submitLauncher(null, contextFinal, actionFinal);
-
+            submitLauncher(actionFs, contextHBase, action);
             LOG.debug("Action submit completed. Performing check ");
-            check(contextFinal, actionFinal);
-
+//            check(contextHBase, action);
+            LOG.debug("Action check is done after submission");
         } catch (Exception ex) {
             throw convertException(ex);
         }
